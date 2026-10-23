@@ -537,50 +537,32 @@
     const token = speakToken;
     setPrompt('听：「' + word + '」……', 'listen');
 
-    // Prefer Free Dictionary US audio (real pronunciation), fallback to speechSynthesis
-    const api = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word);
-    fetch(api)
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('no entry')); })
-      .then(function (data) {
+    // Local bundled US-ish pronunciation (stable; avoids Safari TTS saying wrong word)
+    const src = 'audio/' + encodeURIComponent(word) + '.mp3';
+    const playOnce = function (onDone) {
+      const a = new Audio(src);
+      speakAudio = a;
+      a.onplay = function () {
         if (token !== speakToken) return;
-        let audioUrl = '';
-        const entry = data && data[0];
-        const phonetics = (entry && entry.phonetics) || [];
-        for (let i = 0; i < phonetics.length; i++) {
-          const a = phonetics[i] && phonetics[i].audio;
-          if (a && /us/i.test(a)) { audioUrl = a; break; }
-        }
-        if (!audioUrl) {
-          for (let i = 0; i < phonetics.length; i++) {
-            if (phonetics[i] && phonetics[i].audio) { audioUrl = phonetics[i].audio; break; }
-          }
-        }
-        if (!audioUrl) throw new Error('no audio');
-        speakAudio = new Audio(audioUrl);
-        speakAudio.onplay = function () {
-          if (token !== speakToken) return;
-          setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
-        };
-        speakAudio.onended = function () {
-          // play twice for kids: second time after short pause
-          if (token !== speakToken) return;
-          setTimeout(function () {
-            if (token !== speakToken) return;
-            const again = new Audio(audioUrl);
-            speakAudio = again;
-            again.play().catch(function () {});
-          }, 350);
-        };
-        speakAudio.onerror = function () {
-          if (token !== speakToken) return;
-          speakWithSynthesis(word, token);
-        };
-        return speakAudio.play();
-      })
-      .catch(function () {
+        setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
+      };
+      a.onended = function () { if (onDone) onDone(); };
+      a.onerror = function () {
+        if (token !== speakToken) return;
+        speakWithSynthesis(word, token);
+      };
+      a.play().catch(function () {
         if (token !== speakToken) return;
         speakWithSynthesis(word, token);
       });
+    };
+    playOnce(function () {
+      if (token !== speakToken) return;
+      setTimeout(function () {
+        if (token !== speakToken) return;
+        playOnce(null);
+      }, 350);
+    });
   }
 
   function pickCurrentBall() {
