@@ -255,7 +255,69 @@
       50% { transform: scale(1.05); }
     }
     .speak-btn:active { transform: translateY(2px); }
+    .ios-note {
+      display: none; font-size: 12px; line-height: 1.4; opacity: 0.75;
+      text-align: center; max-width: 320px; margin: 4px 0 0; padding: 0 8px;
+    }
+    .ios-note.show { display: block; }
     .row-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+    .choice-panel {
+      display: none; position: fixed; inset: 0; z-index: 80;
+      background: rgba(26, 42, 58, 0.55);
+      align-items: flex-end; justify-content: center;
+      padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    .choice-panel.show { display: flex; }
+    .choice-card {
+      width: 100%; max-width: 420px;
+      background: var(--card); border-radius: 24px;
+      box-shadow: var(--shadow); padding: 20px 16px 18px;
+      text-align: center;
+    }
+    .choice-title {
+      font-size: 18px; font-weight: 800; margin: 0 0 6px;
+    }
+    .choice-sub {
+      font-size: 14px; opacity: 0.75; margin: 0 0 14px; line-height: 1.45;
+    }
+    .choice-word {
+      font-size: 36px; font-weight: 900; letter-spacing: 0.06em;
+      text-transform: lowercase; color: #1a5fb4; margin: 0 0 16px;
+    }
+    .choice-grid {
+      display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 12px;
+    }
+    .choice-opt {
+      appearance: none; border: 3px solid rgba(58,111,216,0.25);
+      background: linear-gradient(135deg, #eef5ff, #fff);
+      border-radius: 16px; padding: 14px 12px; min-height: 56px;
+      font-size: 24px; font-weight: 800; letter-spacing: 0.04em;
+      text-transform: lowercase; color: var(--ink); cursor: pointer;
+      box-shadow: 0 4px 0 rgba(0,0,0,0.08);
+    }
+    .choice-opt:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,0.08); }
+    .choice-opt.wrong {
+      border-color: #ff6b6b; background: #ffe8e8; animation: shakeOpt 0.35s ease;
+    }
+    @keyframes shakeOpt {
+      0%,100% { transform: translateX(0); }
+      25% { transform: translateX(-6px); }
+      75% { transform: translateX(6px); }
+    }
+    .choice-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    .choice-again {
+      appearance: none; border: none; cursor: pointer;
+      background: linear-gradient(135deg, #ffe066, #ffd43b);
+      color: var(--ink); font-size: 15px; font-weight: 700;
+      padding: 12px 18px; border-radius: 999px; min-height: 44px;
+      box-shadow: 0 4px 0 rgba(0,0,0,0.1);
+    }
+    .choice-close {
+      appearance: none; border: none; cursor: pointer;
+      background: #eef1f5; color: var(--ink); font-size: 15px; font-weight: 700;
+      padding: 12px 18px; border-radius: 999px; min-height: 44px;
+    }
 
     .celebrate {
       position: fixed; inset: 0; pointer-events: none; z-index: 100;
@@ -322,9 +384,23 @@
       <button type="button" class="mic-btn" id="micBtn" aria-label="开始说话">🎤</button>
       <div class="mic-label" id="micLabel">点击说话</div>
       <button type="button" class="speak-btn" id="speakBtn" aria-label="听怎么读">🔊 听怎么读</button>
+      <p class="ios-note" id="iosNoteEl">听读后改为点选单词（系统限制）</p>
       <div class="row-actions">
         <button type="button" class="btn btn-secondary" id="nextGroupBtn">下一组</button>
         <button type="button" class="btn btn-ghost" id="homeBtn">回首页</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="choice-panel" id="choicePanel" aria-hidden="true">
+    <div class="choice-card" role="dialog" aria-labelledby="choiceTitle">
+      <p class="choice-title" id="choiceTitle">跟读后，选出你说的词</p>
+      <p class="choice-sub" id="choiceSub">先大声跟读，再点正确的拼写～</p>
+      <div class="choice-word" id="choiceHintWord">ten</div>
+      <div class="choice-grid" id="choiceGrid"></div>
+      <div class="choice-actions">
+        <button type="button" class="choice-again" id="choiceAgainBtn">🔊 再听一次</button>
+        <button type="button" class="choice-close" id="choiceCloseBtn">关闭</button>
       </div>
     </div>
   </div>
@@ -375,6 +451,12 @@
   const micBtn = document.getElementById('micBtn');
   const micLabel = document.getElementById('micLabel');
   const speakBtn = document.getElementById('speakBtn');
+  const iosNoteEl = document.getElementById('iosNoteEl');
+  const choicePanel = document.getElementById('choicePanel');
+  const choiceGrid = document.getElementById('choiceGrid');
+  const choiceHintWord = document.getElementById('choiceHintWord');
+  const choiceAgainBtn = document.getElementById('choiceAgainBtn');
+  const choiceCloseBtn = document.getElementById('choiceCloseBtn');
   const nextGroupBtn = document.getElementById('nextGroupBtn');
   const homeBtn = document.getElementById('homeBtn');
   const celebrateEl = document.getElementById('celebrateEl');
@@ -505,6 +587,7 @@
   let sttRetry = 0;
   const STT_RETRY_MS = [0, 400, 1000, 2000, 3500];
 
+  /* phonics-fix-ios-post-audio-tap */
   /* phonics-fix-ios-audio-html5 */
   /* phonics-fix-ios-stt-v2 */
   // iPhone / iPad (incl. iPadOS desktop-mode UA)
@@ -514,6 +597,88 @@
     if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
     return false;
   })();
+
+  // After any HTMLAudio hint on iOS, Web Speech stays broken for the session.
+  // Switch mic to a 3-choice tap board instead of STT.
+  let iosAudioPlayed = false;
+
+  function updateIosMicModeUI() {
+    if (!isIOS) {
+      if (iosNoteEl) iosNoteEl.classList.remove('show');
+      return;
+    }
+    if (iosNoteEl) iosNoteEl.classList.add('show');
+    if (iosAudioPlayed) {
+      micBtn.setAttribute('aria-label', '选一选');
+      micBtn.textContent = '👆';
+      if (!listening) micLabel.textContent = '选一选';
+    } else {
+      micBtn.setAttribute('aria-label', '开始说话');
+      micBtn.textContent = '🎤';
+      if (!listening) micLabel.textContent = '点击说话';
+    }
+  }
+
+  function hideChoicePanel() {
+    if (!choicePanel) return;
+    choicePanel.classList.remove('show');
+    choicePanel.setAttribute('aria-hidden', 'true');
+  }
+
+  function pickChoiceOptions(correctWord) {
+    const pool = [];
+    targets.forEach(function (t) {
+      if (t.word !== correctWord && pool.indexOf(t.word) < 0) pool.push(t.word);
+    });
+    // fill from bank if needed
+    const bank = shuffle(WORD_BANK.filter(function (w) {
+      return w !== correctWord && pool.indexOf(w) < 0;
+    }));
+    while (pool.length < 2 && bank.length) pool.push(bank.shift());
+    const distractors = shuffle(pool).slice(0, 2);
+    return shuffle([correctWord].concat(distractors));
+  }
+
+  function openChoicePanel() {
+    if (!current || busy) return;
+    hideChoicePanel();
+    const word = current.word;
+    choiceHintWord.textContent = word;
+    const opts = pickChoiceOptions(word);
+    choiceGrid.innerHTML = '';
+    opts.forEach(function (w) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'choice-opt';
+      btn.textContent = w;
+      btn.dataset.word = w;
+      btn.addEventListener('click', function () {
+        if (busy) return;
+        if (w === word) {
+          hideChoicePanel();
+          busy = true;
+          setHeard(word, 'ok');
+          onCorrectHit();
+        } else {
+          btn.classList.add('wrong');
+          setHeard(w, 'miss');
+          hideChoicePanel();
+          busy = true;
+          onMiss(w);
+        }
+      });
+      choiceGrid.appendChild(btn);
+    });
+    choicePanel.classList.add('show');
+    choicePanel.setAttribute('aria-hidden', 'false');
+    setPrompt('跟读「' + word + '」，再点出正确拼写', 'listen');
+  }
+
+  function markIosAudioPlayed() {
+    if (!isIOS) return;
+    iosAudioPlayed = true;
+    updateIosMicModeUI();
+  }
 
   function clearSttWatchdog() {
     if (sttWatchdog) {
@@ -634,8 +799,9 @@
       if (token !== speakToken) return;
       speaking = false;
       micBtn.disabled = false;
-      setPrompt('一起拼完啦 → 「' + word + '」，现在点麦克风跟读', 'listen');
-      micLabel.textContent = '点击说话';
+      markIosAudioPlayed();
+      setPrompt('一起拼完啦 → 「' + word + '」。点「选一选」选出这个词', 'listen');
+      updateIosMicModeUI();
       if (speakHtmlAudio === a) speakHtmlAudio = null;
     }
 
@@ -643,9 +809,9 @@
       if (token !== speakToken) return;
       speaking = false;
       micBtn.disabled = false;
-      // No speechSynthesis on iOS — keeps STT alive
-      setPrompt('一起拼：' + word.toUpperCase().split('').join('… ') + ' → ' + word + '。请家长读出：「' + word + '」，再点麦克风跟读', 'err');
-      micLabel.textContent = '点击说话';
+      // No speechSynthesis on iOS — keeps STT alive. Visual-only does NOT mark audio played.
+      setPrompt('一起拼：' + word.toUpperCase().split('').join('… ') + ' → ' + word + '。请家长读出：「' + word + '」，再点麦克风', 'err');
+      updateIosMicModeUI();
       if (speakHtmlAudio === a) speakHtmlAudio = null;
     }
 
@@ -663,10 +829,14 @@
     if (playPromise && typeof playPromise.then === 'function') {
       playPromise.then(function () {
         if (token !== speakToken) return;
+        markIosAudioPlayed();
         setPrompt('听：「' + word + '」——一起拼字母', 'listen');
       }).catch(function () {
         finishFail();
       });
+    } else {
+      // Older WebKit may not return a promise; assume play started
+      markIosAudioPlayed();
     }
   }
 
@@ -739,7 +909,13 @@
     clearHeard();
     resetBallDom();
     updateHintVisibility();
-    setPrompt('点击麦克风，说出这个单词～');
+    hideChoicePanel();
+    if (isIOS && iosAudioPlayed) {
+      setPrompt('点「选一选」，跟读后选出正确单词～');
+    } else {
+      setPrompt('点击麦克风，说出这个单词～');
+    }
+    updateIosMicModeUI();
   }
 
   function renderTargets(words) {
@@ -967,14 +1143,21 @@
         busy = false;
         if (needHint) {
           showSpeakHint(true);
-          setPrompt('先点「听怎么读」听标准发音，再点麦克风跟读', 'listen');
-          // auto play once after 2 fails
+          if (isIOS && iosAudioPlayed) {
+            setPrompt('再点「听怎么读」，然后点「选一选」选出单词', 'listen');
+          } else {
+            setPrompt('先点「听怎么读」听标准发音，再点麦克风跟读', 'listen');
+          }
+          // auto play once after 2 fails (may fail without gesture on iOS — OK)
           if (current && missStreak === MISS_BEFORE_HINT) {
             speakWord(current.word);
           }
+        } else if (isIOS && iosAudioPlayed) {
+          setPrompt('点「选一选」，选出正确单词～');
         } else {
           setPrompt('点击麦克风，再说一次～');
         }
+        updateIosMicModeUI();
       }, 200);
     });
   }
@@ -1172,18 +1355,30 @@
   }
 
   function startListening() {
+    if (busy || !current) return;
+
+    // iOS after hint audio: STT is dead — use 3-choice tap board (no SpeechRecognition)
+    if (isIOS && iosAudioPlayed) {
+      if (speaking) {
+        setPrompt('请等提示音播完，再点选', 'err');
+        return;
+      }
+      stopSpeak();
+      openChoicePanel();
+      return;
+    }
+
     if (!SpeechRecognition) {
       showScreen(unsupportedScreen);
       return;
     }
-    if (busy || !current) return;
     if (listening) {
       stopListening();
       micLabel.textContent = '点击说话';
       setPrompt('已取消，再点麦克风试试');
       return;
     }
-    // Non-iOS audio hint holds speaking=true; iOS visual hint never blocks mic
+    // Non-iOS audio hint holds speaking=true
     if (speaking && !isIOS) {
       setPrompt('请等提示音播完，再点说话', 'err');
       return;
@@ -1207,41 +1402,70 @@
 
   // --- Events ---
   startBtn.addEventListener('click', function () {
-    if (!SpeechRecognition) {
+    // Desktop needs SpeechRecognition; iOS can continue via tap board after audio
+    if (!SpeechRecognition && !isIOS) {
       showScreen(unsupportedScreen);
       return;
     }
     // Unlock Web Audio only on non-iOS (desktop Chrome hint MP3 path)
     if (!isIOS) ensureAudioCtx();
+    iosAudioPlayed = false;
+    hideChoicePanel();
     score = 0;
     scoreEl.textContent = '0';
     refillDeck();
     showScreen(gameScreen);
     startRound();
+    updateIosMicModeUI();
   });
 
   micBtn.addEventListener('click', startListening);
   speakBtn.addEventListener('click', function () {
     if (!current) return;
     if (listening) stopListening();
+    hideChoicePanel();
     speakWord(current.word);
+  });
+  choiceAgainBtn.addEventListener('click', function () {
+    if (!current || busy) return;
+    // Replay hint (keeps iosAudioPlayed true)
+    speakWord(current.word);
+  });
+  choiceCloseBtn.addEventListener('click', function () {
+    hideChoicePanel();
+    if (isIOS && iosAudioPlayed) {
+      setPrompt('点「选一选」继续，或点「听怎么读」再听', 'listen');
+    }
+    updateIosMicModeUI();
+  });
+  // tap backdrop to close
+  choicePanel.addEventListener('click', function (ev) {
+    if (ev.target === choicePanel) {
+      hideChoicePanel();
+      updateIosMicModeUI();
+    }
   });
   nextGroupBtn.addEventListener('click', function () {
     if (busy && listening) stopListening();
     stopSpeak();
+    hideChoicePanel();
     busy = false;
     startRound();
     setPrompt('新的一组来啦！');
+    updateIosMicModeUI();
   });
   homeBtn.addEventListener('click', function () {
     stopListening();
     stopSpeak();
+    hideChoicePanel();
     busy = false;
+    iosAudioPlayed = false;
     showScreen(startScreen);
   });
   hintToggle.addEventListener('change', updateHintVisibility);
 
-  // iOS Safari: need user gesture; start screen already provides it.
+  // Show iOS note early (even before first audio)
+  updateIosMicModeUI();
 })();
   </script>
 </body>
