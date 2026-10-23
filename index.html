@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>自然拼读打靶</title>
+  <style>
+    :root {
+      --bg1: #a8e6ff;
+      --bg2: #ffe8a8;
+      --ink: #1a2a3a;
+      --card: rgba(255,255,255,0.92);
+      --accent: #ff6b6b;
+      --ok: #2ecc71;
+      --shadow: 0 8px 24px rgba(0,0,0,0.12);
+      --radius: 20px;
+      --safe-b: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(165deg, var(--bg1), #d4f5c8 45%, var(--bg2));
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+
+    .screen {
+      display: none; flex: 1; flex-direction: column;
+      padding: 16px 16px calc(16px + var(--safe-b));
+      max-width: 520px; width: 100%; margin: 0 auto;
+    }
+    .screen.active { display: flex; }
+
+    /* Start */
+    #startScreen {
+      justify-content: center; align-items: center; text-align: center; gap: 18px;
+    }
+    .logo {
+      font-size: 64px; line-height: 1;
+      animation: bounce 1.6s ease-in-out infinite;
+    }
+    @keyframes bounce {
+      0%,100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+    h1 {
+      margin: 0; font-size: clamp(28px, 8vw, 36px); font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+    .subtitle { font-size: 16px; opacity: 0.85; margin: 0; line-height: 1.5; }
+    .privacy {
+      font-size: 12px; line-height: 1.55; opacity: 0.7;
+      background: var(--card); padding: 12px 14px; border-radius: 12px;
+      box-shadow: var(--shadow); max-width: 360px; text-align: left;
+    }
+    .btn {
+      appearance: none; border: none; cursor: pointer;
+      font-size: 20px; font-weight: 700; color: #fff;
+      background: linear-gradient(135deg, #ff7a59, #ff4d6d);
+      padding: 16px 40px; border-radius: 999px;
+      box-shadow: 0 6px 0 #d63a52, var(--shadow);
+      transition: transform 0.12s, box-shadow 0.12s;
+      min-height: 56px; min-width: 160px;
+    }
+    .btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #d63a52, var(--shadow); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: linear-gradient(135deg, #5b8def, #3a6fd8);
+      box-shadow: 0 6px 0 #2a55b0, var(--shadow);
+      font-size: 16px; padding: 12px 22px; min-height: 48px; min-width: auto;
+    }
+    .btn-secondary:active { box-shadow: 0 2px 0 #2a55b0, var(--shadow); }
+    .btn-ghost {
+      background: var(--card); color: var(--ink);
+      box-shadow: 0 4px 0 rgba(0,0,0,0.08), var(--shadow);
+      font-size: 15px; padding: 10px 18px; min-height: 44px;
+    }
+    .btn-ghost:active { box-shadow: 0 1px 0 rgba(0,0,0,0.08), var(--shadow); }
+
+    /* Unsupported */
+    #unsupportedScreen {
+      justify-content: center; align-items: center; text-align: center; gap: 14px;
+    }
+    .warn-box {
+      background: var(--card); padding: 24px; border-radius: var(--radius);
+      box-shadow: var(--shadow); max-width: 360px;
+    }
+
+    /* Game header */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+    }
+    .stat {
+      background: var(--card); border-radius: 14px; padding: 8px 14px;
+      font-weight: 700; font-size: 15px; box-shadow: var(--shadow);
+      white-space: nowrap;
+    }
+    .stat span { color: #e85d04; }
+    .toggles { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .toggle {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--card); border-radius: 14px; padding: 8px 12px;
+      font-size: 13px; font-weight: 600; box-shadow: var(--shadow);
+      cursor: pointer; user-select: none;
+    }
+    .toggle input { width: 18px; height: 18px; accent-color: #3a6fd8; }
+
+    .prompt {
+      text-align: center; min-height: 28px; font-size: 16px; font-weight: 600;
+      margin: 6px 0 10px; opacity: 0.9;
+    }
+    .prompt.ok { color: #1b7a3d; }
+    .prompt.err { color: #c0392b; }
+    .prompt.listen { color: #1a5fb4; }
+
+    /* Playfield */
+    .stage {
+      position: relative; flex: 1; min-height: 280px;
+      background: rgba(255,255,255,0.35);
+      border-radius: var(--radius); box-shadow: inset 0 0 0 3px rgba(255,255,255,0.5);
+      overflow: hidden; margin-bottom: 12px;
+    }
+    .targets {
+      position: absolute; inset: 0;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 8px; padding: 12px;
+      align-items: center; justify-items: center;
+    }
+    .target {
+      width: min(28vw, 100px); max-width: 100%;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      transition: opacity 0.35s, transform 0.35s;
+    }
+    .target.hit {
+      animation: popOut 0.45s ease forwards;
+      pointer-events: none;
+    }
+    @keyframes popOut {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.25); opacity: 1; }
+      100% { transform: scale(0); opacity: 0; }
+    }
+    .target-shape {
+      width: 64px; height: 64px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 32px;
+      box-shadow: 0 4px 0 rgba(0,0,0,0.15), 0 8px 16px rgba(0,0,0,0.1);
+      border: 3px solid rgba(255,255,255,0.7);
+    }
+    .target-label {
+      font-size: 18px; font-weight: 800; letter-spacing: 0.04em;
+      text-transform: lowercase;
+      background: rgba(255,255,255,0.85);
+      padding: 2px 10px; border-radius: 8px;
+    }
+
+    .ball-area {
+      position: absolute; left: 0; right: 0; bottom: 18%;
+      display: flex; flex-direction: column; align-items: center;
+      pointer-events: none; z-index: 5;
+    }
+    .hint {
+      font-size: 22px; font-weight: 800; letter-spacing: 0.06em;
+      background: rgba(255,255,255,0.9);
+      padding: 6px 16px; border-radius: 12px;
+      margin-bottom: 10px; box-shadow: var(--shadow);
+      text-transform: lowercase;
+      transition: opacity 0.2s;
+    }
+    .hint.hidden { opacity: 0; visibility: hidden; height: 0; margin: 0; padding: 0; }
+    .ball {
+      width: 56px; height: 56px; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,0.85);
+      box-shadow: 0 6px 0 rgba(0,0,0,0.18), 0 10px 20px rgba(0,0,0,0.15);
+      transition: transform 0.05s linear;
+      will-change: transform, left, top;
+    }
+    .ball.flying {
+      position: fixed; z-index: 50;
+      transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1),
+                  left 0.7s cubic-bezier(0.2, 0.8, 0.2, 1),
+                  top 0.7s cubic-bezier(0.45, 0.05, 0.55, 1.2),
+                  opacity 0.3s;
+    }
+    .ball.pop {
+      animation: ballPop 0.4s ease forwards;
+    }
+    @keyframes ballPop {
+      0% { transform: scale(1); opacity: 1; }
+      40% { transform: scale(1.4); opacity: 1; }
+      100% { transform: scale(0); opacity: 0; }
+    }
+    .ball.miss {
+      opacity: 0;
+    }
+
+    .controls {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      padding-bottom: 4px;
+    }
+    .mic-btn {
+      width: 88px; height: 88px; border-radius: 50%; border: none; cursor: pointer;
+      background: linear-gradient(145deg, #ff6b6b, #ee4266);
+      color: #fff; font-size: 40px;
+      box-shadow: 0 8px 0 #c92a4a, 0 12px 28px rgba(238,66,102,0.45);
+      transition: transform 0.12s, box-shadow 0.12s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .mic-btn:active:not(:disabled) {
+      transform: translateY(5px); box-shadow: 0 3px 0 #c92a4a, 0 6px 16px rgba(238,66,102,0.35);
+    }
+    .mic-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .mic-btn.listening {
+      animation: pulseMic 1s ease-in-out infinite;
+      background: linear-gradient(145deg, #4dabf7, #228be6);
+      box-shadow: 0 8px 0 #1864ab, 0 12px 28px rgba(34,139,230,0.5);
+    }
+    @keyframes pulseMic {
+      0%,100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+    .mic-label { font-size: 14px; font-weight: 600; opacity: 0.8; margin-top: -4px; }
+    .row-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+    .celebrate {
+      position: fixed; inset: 0; pointer-events: none; z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 48px; font-weight: 800; color: #fff;
+      text-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .celebrate.show { opacity: 1; }
+
+    @media (max-width: 380px) {
+      .target-shape { width: 52px; height: 52px; font-size: 26px; }
+      .target-label { font-size: 15px; }
+      .ball { width: 48px; height: 48px; }
+      .mic-btn { width: 76px; height: 76px; font-size: 34px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Start -->
+  <div id="startScreen" class="screen active">
+    <div class="logo" aria-hidden="true">🎯</div>
+    <h1>自然拼读打靶</h1>
+    <p class="subtitle">对着麦克风说出彩色球对应的单词<br>说对了，球就会飞向目标！</p>
+    <button type="button" class="btn" id="startBtn">开始</button>
+    <p class="privacy">
+      隐私提示：本游戏使用浏览器的语音识别功能。麦克风声音可能会发送到浏览器厂商（如 Google / Apple）的服务器进行识别，本页面本身不会上传或保存你的录音。
+    </p>
+  </div>
+
+  <!-- Unsupported -->
+  <div id="unsupportedScreen" class="screen">
+    <div class="warn-box">
+      <div style="font-size:48px;margin-bottom:8px">😕</div>
+      <h2 style="margin:0 0 10px;font-size:22px">暂不支持语音识别</h2>
+      <p style="margin:0;line-height:1.6;font-size:15px">
+        请使用 <strong>Chrome</strong>、<strong>Edge</strong> 或 <strong>Safari</strong>（iOS 14.5+）打开本页面，并允许使用麦克风后再试。
+      </p>
+    </div>
+  </div>
+
+  <!-- Game -->
+  <div id="gameScreen" class="screen">
+    <div class="topbar">
+      <div class="stat">得分 <span id="scoreEl">0</span></div>
+      <div class="stat">剩余 <span id="remainEl">0</span></div>
+      <div class="toggles">
+        <label class="toggle">
+          <input type="checkbox" id="hintToggle" checked />
+          显示提示词
+        </label>
+      </div>
+    </div>
+    <div class="prompt" id="promptEl">点击麦克风，说出提示词～</div>
+    <div class="stage" id="stage">
+      <div class="targets" id="targetsEl"></div>
+      <div class="ball-area" id="ballArea">
+        <div class="hint" id="hintEl">cat</div>
+        <div class="ball" id="ballEl"></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button type="button" class="mic-btn" id="micBtn" aria-label="开始说话">🎤</button>
+      <div class="mic-label" id="micLabel">点击说话</div>
+      <div class="row-actions">
+        <button type="button" class="btn btn-secondary" id="nextGroupBtn">下一组</button>
+        <button type="button" class="btn btn-ghost" id="homeBtn">回首页</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="celebrate" id="celebrateEl" aria-hidden="true">太棒了！🎉</div>
+
+  <script>
+(function () {
+  'use strict';
+
+  // --- Word bank (beginner CVC) ---
+  const WORD_BANK = [
+    // short a
+    'cat','bat','hat','map','man','dad','bag','jam',
+    // short e
+    'bed','red','hen','pen','net','leg','ten','wet',
+    // short i
+    'pig','big','sit','hit','lip','kid','six','win',
+    // short o
+    'dog','hot','mop','pot','box','fox','top','log',
+    // short u
+    'duck','cup','sun','bus','bun','mug','run','hut'
+  ];
+
+  const COLORS = [
+    { id: 'coral', hex: '#ff6b6b', emoji: '🍎' },
+    { id: 'sky',   hex: '#4dabf7', emoji: '🔵' },
+    { id: 'lime',  hex: '#51cf66', emoji: '🟢' },
+    { id: 'sun',   hex: '#fcc419', emoji: '⭐' },
+    { id: 'violet',hex: '#9775fa', emoji: '🟣' },
+    { id: 'orange',hex: '#ff922b', emoji: '🟠' }
+  ];
+
+  // --- DOM ---
+  const startScreen = document.getElementById('startScreen');
+  const unsupportedScreen = document.getElementById('unsupportedScreen');
+  const gameScreen = document.getElementById('gameScreen');
+  const startBtn = document.getElementById('startBtn');
+  const scoreEl = document.getElementById('scoreEl');
+  const remainEl = document.getElementById('remainEl');
+  const promptEl = document.getElementById('promptEl');
+  const targetsEl = document.getElementById('targetsEl');
+  const ballEl = document.getElementById('ballEl');
+  const ballArea = document.getElementById('ballArea');
+  const hintEl = document.getElementById('hintEl');
+  const hintToggle = document.getElementById('hintToggle');
+  const micBtn = document.getElementById('micBtn');
+  const micLabel = document.getElementById('micLabel');
+  const nextGroupBtn = document.getElementById('nextGroupBtn');
+  const homeBtn = document.getElementById('homeBtn');
+  const celebrateEl = document.getElementById('celebrateEl');
+
+  // --- State ---
+  let score = 0;
+  let deck = [];           // remaining words in bank cycle
+  let targets = [];        // { word, colorIdx, el }
+  let current = null;      // { word, colorIdx }
+  let busy = false;        // animating / listening lock
+  let recognition = null;
+  let listening = false;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  function showScreen(el) {
+    [startScreen, unsupportedScreen, gameScreen].forEach(s => s.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function refillDeck() {
+    deck = shuffle(WORD_BANK);
+  }
+
+  function takeWords(n) {
+    if (deck.length === 0) refillDeck();
+    const out = [];
+    while (out.length < n) {
+      if (deck.length === 0) refillDeck();
+      // avoid duplicates in the same round
+      const w = deck.shift();
+      if (!out.includes(w)) out.push(w);
+      else deck.push(w); // put back if duplicate within round (rare after full shuffle)
+      // safety: if bank smaller than n somehow
+      if (out.length + deck.length === 0) break;
+      // prevent infinite loop
+      if (out.length < n && deck.every(x => out.includes(x))) {
+        // exhaust uniqueness; allow remaining from bank reshuffle excluding current out
+        const extra = shuffle(WORD_BANK.filter(x => !out.includes(x)));
+        while (out.length < n && extra.length) out.push(extra.shift());
+        break;
+      }
+    }
+    return out;
+  }
+
+  function setPrompt(text, cls) {
+    promptEl.textContent = text;
+    promptEl.className = 'prompt' + (cls ? ' ' + cls : '');
+  }
+
+  function updateHintVisibility() {
+    if (hintToggle.checked && current) {
+      hintEl.textContent = current.word;
+      hintEl.classList.remove('hidden');
+    } else {
+      hintEl.classList.add('hidden');
+    }
+  }
+
+  function updateRemain() {
+    remainEl.textContent = String(targets.length);
+  }
+
+  function resetBallDom() {
+    // put ball back in ball-area flow layout
+    ballEl.className = 'ball';
+    ballEl.style.cssText = '';
+    if (ballEl.parentElement !== ballArea) {
+      ballArea.appendChild(ballEl);
+    }
+    if (current) {
+      ballEl.style.background = COLORS[current.colorIdx].hex;
+    }
+    ballEl.style.display = current ? 'block' : 'none';
+  }
+
+  function pickCurrentBall() {
+    if (targets.length === 0) {
+      current = null;
+      resetBallDom();
+      updateHintVisibility();
+      return;
+    }
+    const t = targets[Math.floor(Math.random() * targets.length)];
+    current = { word: t.word, colorIdx: t.colorIdx };
+    resetBallDom();
+    updateHintVisibility();
+    setPrompt('点击麦克风，说出这个单词～');
+  }
+
+  function renderTargets(words) {
+    targetsEl.innerHTML = '';
+    targets = [];
+    const colorOrder = shuffle(COLORS.map((_, i) => i)).slice(0, words.length);
+    words.forEach((word, i) => {
+      const colorIdx = colorOrder[i];
+      const c = COLORS[colorIdx];
+      const wrap = document.createElement('div');
+      wrap.className = 'target';
+      wrap.dataset.word = word;
+      wrap.innerHTML =
+        '<div class="target-shape" style="background:' + c.hex + '">' + c.emoji + '</div>' +
+        '<div class="target-label">' + word + '</div>';
+      targetsEl.appendChild(wrap);
+      targets.push({ word: word, colorIdx: colorIdx, el: wrap });
+    });
+    updateRemain();
+  }
+
+  function startRound(forceCount) {
+    busy = false;
+    listening = false;
+    stopListening();
+    micBtn.classList.remove('listening');
+    micLabel.textContent = '点击说话';
+    const n = forceCount || (4 + Math.floor(Math.random() * 3)); // 4–6
+    const words = takeWords(n);
+    renderTargets(words);
+    pickCurrentBall();
+  }
+
+  function normalize(s) {
+    return String(s || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^\p{L}\p{N}\s']/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function wholeWordMatch(transcript, word) {
+    const t = normalize(transcript);
+    const w = normalize(word);
+    if (!t || !w) return false;
+    if (t === w) return true;
+    // whole word boundary
+    const re = new RegExp('(?:^|\\s)' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\s|$)');
+    return re.test(t);
+  }
+
+  function collectTranscripts(event) {
+    const list = [];
+    if (!event || !event.results) return list;
+    for (let i = 0; i < event.results.length; i++) {
+      const res = event.results[i];
+      for (let j = 0; j < res.length; j++) {
+        if (res[j] && res[j].transcript) list.push(res[j].transcript);
+      }
+    }
+    return list;
+  }
+
+  function getBallStartRect() {
+    return ballEl.getBoundingClientRect();
+  }
+
+  function flyBallTo(clientX, clientY, onDone) {
+    const start = getBallStartRect();
+    const size = start.width || 56;
+    // lift into fixed coords
+    ballEl.classList.add('flying');
+    ballEl.style.position = 'fixed';
+    ballEl.style.left = start.left + 'px';
+    ballEl.style.top = start.top + 'px';
+    ballEl.style.width = size + 'px';
+    ballEl.style.height = size + 'px';
+    ballEl.style.margin = '0';
+    document.body.appendChild(ballEl);
+
+    // force reflow then animate
+    void ballEl.offsetWidth;
+    const destLeft = clientX - size / 2;
+    const destTop = clientY - size / 2;
+    ballEl.style.left = destLeft + 'px';
+    ballEl.style.top = destTop + 'px';
+    ballEl.style.transform = 'scale(0.85)';
+
+    const done = function () {
+      ballEl.removeEventListener('transitionend', done);
+      onDone && onDone();
+    };
+    ballEl.addEventListener('transitionend', done);
+    setTimeout(done, 800); // fallback
+  }
+
+  function flyMiss(onDone) {
+    const start = getBallStartRect();
+    const size = start.width || 56;
+    const stage = document.getElementById('stage').getBoundingClientRect();
+    // random off-target direction
+    const edges = [
+      { x: stage.left - 40, y: stage.top + Math.random() * stage.height },
+      { x: stage.right + 40, y: stage.top + Math.random() * stage.height },
+      { x: stage.left + Math.random() * stage.width, y: stage.top - 40 },
+      { x: stage.left + Math.random() * stage.width, y: stage.bottom + 40 }
+    ];
+    // prefer not flying toward the correct target
+    const edge = edges[Math.floor(Math.random() * edges.length)];
+
+    ballEl.classList.add('flying');
+    ballEl.style.position = 'fixed';
+    ballEl.style.left = start.left + 'px';
+    ballEl.style.top = start.top + 'px';
+    ballEl.style.width = size + 'px';
+    ballEl.style.height = size + 'px';
+    ballEl.style.margin = '0';
+    document.body.appendChild(ballEl);
+    void ballEl.offsetWidth;
+    ballEl.style.left = (edge.x - size / 2) + 'px';
+    ballEl.style.top = (edge.y - size / 2) + 'px';
+    ballEl.style.transform = 'scale(0.6) rotate(40deg)';
+    ballEl.style.opacity = '0.3';
+
+    const done = function () {
+      ballEl.removeEventListener('transitionend', done);
+      ballEl.classList.add('miss');
+      onDone && onDone();
+    };
+    ballEl.addEventListener('transitionend', done);
+    setTimeout(done, 800);
+  }
+
+  function showCelebrate(brief) {
+    celebrateEl.textContent = brief || '太棒了！🎉';
+    celebrateEl.classList.add('show');
+    setTimeout(function () { celebrateEl.classList.remove('show'); }, 900);
+  }
+
+  function onCorrectHit() {
+    const match = targets.find(t => t.word === current.word && t.colorIdx === current.colorIdx);
+    if (!match) {
+      busy = false;
+      pickCurrentBall();
+      return;
+    }
+    const rect = match.el.querySelector('.target-shape').getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    setPrompt('说对了！「' + current.word + '」👍', 'ok');
+    flyBallTo(cx, cy, function () {
+      ballEl.classList.add('pop');
+      match.el.classList.add('hit');
+      score += 1;
+      scoreEl.textContent = String(score);
+      showCelebrate('命中！+' + 1);
+
+      setTimeout(function () {
+        // remove target
+        targets = targets.filter(t => t !== match);
+        if (match.el.parentNode) match.el.parentNode.removeChild(match.el);
+        updateRemain();
+
+        // remove flying ball node and prepare next
+        if (ballEl.parentNode) ballEl.parentNode.removeChild(ballEl);
+        ballArea.appendChild(ballEl);
+
+        if (targets.length === 0) {
+          setPrompt('全部打完啦！准备下一组～', 'ok');
+          showCelebrate('全部打完！🎉');
+          setTimeout(function () {
+            startRound();
+            busy = false;
+          }, 900);
+        } else {
+          pickCurrentBall();
+          busy = false;
+        }
+      }, 420);
+    });
+  }
+
+  function onMiss(heard) {
+    const shown = heard ? ('听到了「' + heard + '」') : '没听清';
+    setPrompt(shown + '，再试一次吧～轻轻说清楚一点哦', 'err');
+    flyMiss(function () {
+      setTimeout(function () {
+        if (ballEl.parentNode) ballEl.parentNode.removeChild(ballEl);
+        ballArea.appendChild(ballEl);
+        resetBallDom();
+        updateHintVisibility();
+        busy = false;
+        setPrompt('点击麦克风，再说一次～');
+      }, 200);
+    });
+  }
+
+  function handleSpeechResult(event) {
+    if (!current || busy === false && !listening) { /* continue */ }
+    const transcripts = collectTranscripts(event);
+    const primary = transcripts[0] ? normalize(transcripts[0]) : '';
+    let matched = false;
+    for (let i = 0; i < transcripts.length; i++) {
+      if (wholeWordMatch(transcripts[i], current.word)) {
+        matched = true;
+        break;
+      }
+    }
+    listening = false;
+    micBtn.classList.remove('listening');
+    micLabel.textContent = '点击说话';
+    busy = true;
+
+    if (matched) {
+      onCorrectHit();
+    } else {
+      onMiss(primary || '');
+    }
+  }
+
+  function stopListening() {
+    if (recognition) {
+      try { recognition.abort(); } catch (e) { /* ignore */ }
+    }
+    listening = false;
+    micBtn.classList.remove('listening');
+  }
+
+  function startListening() {
+    if (!SpeechRecognition) {
+      showScreen(unsupportedScreen);
+      return;
+    }
+    if (busy || !current) return;
+    if (listening) {
+      stopListening();
+      micLabel.textContent = '点击说话';
+      setPrompt('已取消，再点麦克风试试');
+      return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 5;
+
+    recognition.onstart = function () {
+      listening = true;
+      micBtn.classList.add('listening');
+      micLabel.textContent = '正在听…';
+      setPrompt('请说：「' + (hintToggle.checked ? current.word : '提示词对应的单词') + '」', 'listen');
+    };
+
+    recognition.onresult = function (event) {
+      handleSpeechResult(event);
+    };
+
+    recognition.onerror = function (event) {
+      listening = false;
+      micBtn.classList.remove('listening');
+      micLabel.textContent = '点击说话';
+      const err = event && event.error;
+      if (err === 'not-allowed' || err === 'service-not-allowed') {
+        setPrompt('请允许使用麦克风后再试（浏览器地址栏旁）', 'err');
+      } else if (err === 'no-speech') {
+        busy = true;
+        onMiss('');
+        return;
+      } else if (err === 'aborted') {
+        setPrompt('已取消');
+      } else {
+        setPrompt('识别出了点小问题，再点麦克风试试', 'err');
+      }
+      busy = false;
+    };
+
+    recognition.onend = function () {
+      if (listening) {
+        // ended without result
+        listening = false;
+        micBtn.classList.remove('listening');
+        micLabel.textContent = '点击说话';
+        if (!busy) setPrompt('没听到声音，再点麦克风试试');
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (e) {
+      setPrompt('无法启动麦克风，请刷新页面再试', 'err');
+      busy = false;
+    }
+  }
+
+  // --- Events ---
+  startBtn.addEventListener('click', function () {
+    if (!SpeechRecognition) {
+      showScreen(unsupportedScreen);
+      return;
+    }
+    score = 0;
+    scoreEl.textContent = '0';
+    refillDeck();
+    showScreen(gameScreen);
+    startRound();
+  });
+
+  micBtn.addEventListener('click', startListening);
+  nextGroupBtn.addEventListener('click', function () {
+    if (busy && listening) stopListening();
+    busy = false;
+    startRound();
+    setPrompt('新的一组来啦！');
+  });
+  homeBtn.addEventListener('click', function () {
+    stopListening();
+    busy = false;
+    showScreen(startScreen);
+  });
+  hintToggle.addEventListener('change', updateHintVisibility);
+
+  // iOS Safari: need user gesture; start screen already provides it.
+})();
+  </script>
+</body>
+</html>
