@@ -119,15 +119,15 @@
     .prompt.err { color: #c0392b; }
     .prompt.listen { color: #1a5fb4; }
     .heard {
-      text-align: center; min-height: 0; font-size: 18px; font-weight: 800;
-      margin: 0 0 10px; padding: 8px 14px; border-radius: 14px;
-      background: rgba(255,255,255,0.92); color: #1a5fb4;
+      text-align: center; min-height: 26px; font-size: 20px; font-weight: 800;
+      margin: 0 0 10px; padding: 10px 16px; border-radius: 14px;
+      background: rgba(255,255,255,0.95); color: #1a5fb4;
       box-shadow: var(--shadow); letter-spacing: 0.02em;
-      display: none;
+      display: none; border: 2px solid #4dabf7;
     }
-    .heard.show { display: block; }
-    .heard.miss { color: #c0392b; background: rgba(255,235,238,0.95); }
-    .heard.ok { color: #1b7a3d; background: rgba(220,245,230,0.95); }
+    .heard.show { display: block !important; visibility: visible !important; opacity: 1 !important; }
+    .heard.miss { color: #c0392b; background: rgba(255,235,238,0.98); border-color: #ff6b6b; }
+    .heard.ok { color: #1b7a3d; background: rgba(220,245,230,0.98); border-color: #2ecc71; }
 
     /* Playfield */
     .stage {
@@ -440,13 +440,23 @@
   function setHeard(word, cls) {
     const w = String(word || '').trim();
     if (!w) return;
-    heardEl.textContent = '识别到：' + w;
-    heardEl.className = 'heard show' + (cls ? ' ' + cls : '');
+    try {
+      if (heardEl) {
+        heardEl.textContent = '识别到：' + w;
+        heardEl.className = 'heard show' + (cls ? ' ' + cls : '');
+      }
+      // Also mirror on mic label so feedback is never lost
+      if (micLabel) micLabel.textContent = '识别到：' + w;
+    } catch (e) { /* never block STT on UI error */ }
   }
 
   function clearHeard() {
-    heardEl.textContent = '';
-    heardEl.className = 'heard';
+    try {
+      if (heardEl) {
+        heardEl.textContent = '';
+        heardEl.className = 'heard';
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function updateHintVisibility() {
@@ -494,6 +504,7 @@
   let sttRetry = 0;
   const STT_RETRY_MS = [0, 400, 1000, 2000, 3500];
 
+  /* phonics-fix-ios-stt-v2 */
   // iPhone / iPad (incl. iPadOS desktop-mode UA)
   const isIOS = (function () {
     const ua = navigator.userAgent || '';
@@ -878,6 +889,8 @@
     }
     listening = false;
     micBtn.classList.remove('listening');
+    // Keep 识别到 visible on heardEl; label can go idle
+    if (heard) setHeard(heard, matched ? 'ok' : 'miss');
     micLabel.textContent = '点击说话';
     busy = true;
     if (matched) {
@@ -894,8 +907,7 @@
 
     const primary = normalize(transcripts[0]);
     if (primary) {
-      setHeard(primary);
-      micLabel.textContent = '识别到：' + primary;
+      setHeard(primary); // shows #heardEl + micLabel; never throws into match path
     }
 
     // Fast path: match on interim OR final — don't wait for silence end
@@ -931,10 +943,17 @@
 
   function scheduleSttWatchdog() {
     clearSttWatchdog();
-    // iOS WebKit bug: STT can "start" but never deliver results after audio.
+    // On iOS, never auto-restart recognition via setTimeout — WebKit requires
+    // recognition.start() inside the original user tap. Just nudge the child.
+    if (isIOS) {
+      sttWatchdog = setTimeout(function () {
+        if (!listening || busy || sttGotResult) return;
+        setPrompt('还没听到呢，对着麦克风大声说：「' + (current ? current.word : '') + '」', 'listen');
+      }, 4500);
+      return;
+    }
     sttWatchdog = setTimeout(function () {
       if (!listening || busy || sttGotResult) return;
-      // Silent failure — retry with new instance + escalating delay
       if (sttRetry < STT_RETRY_MS.length - 1) {
         sttRetry += 1;
         const wait = STT_RETRY_MS[sttRetry];
@@ -947,7 +966,7 @@
         }, wait);
       } else {
         stopListening();
-        setPrompt('听完提示后识别仍异常。请关掉本页再打开，或先跳过听读、直接点说话', 'err');
+        setPrompt('识别异常，请再点一次「点击说话」', 'err');
         sttRetry = 0;
       }
     }, 2800);
@@ -1019,10 +1038,16 @@
       if (listening) {
         listening = false;
         micBtn.classList.remove('listening');
-        micLabel.textContent = '点击说话';
+        // Keep 识别到 on heardEl; only reset label if nothing was heard
+        if (!sttGotResult) {
+          micLabel.textContent = '点击说话';
+        }
         if (!busy && !sttGotResult) {
-          // ended with nothing — kick retry path
-          if (sttRetry < STT_RETRY_MS.length - 1) {
+          if (isIOS) {
+            // Must re-tap on iOS (no background restart)
+            setPrompt('没听到声音，再点麦克风大声说一次', 'err');
+            sttRetry = 0;
+          } else if (sttRetry < STT_RETRY_MS.length - 1) {
             sttRetry += 1;
             const wait = STT_RETRY_MS[sttRetry];
             setPrompt('没收到声音，正在自动重试…', 'listen');
@@ -1053,14 +1078,16 @@
       setPrompt('已取消，再点麦克风试试');
       return;
     }
-    if (speaking) {
+    // Non-iOS audio hint holds speaking=true; iOS visual hint never blocks mic
+    if (speaking && !isIOS) {
       setPrompt('请等提示音播完，再点说话', 'err');
       return;
     }
 
-    // Sync start in the same tap (required on iOS)
-    ensureAudioCtx();
-    stopSpeak();
+    // IMPORTANT (iOS): recognition.start() MUST stay synchronous in this tap.
+    // Do NOT create/resume AudioContext on iOS — it steals the audio session from STT.
+    if (!isIOS) ensureAudioCtx();
+    stopSpeak(); // cancels visual animation token; speaking=false
     sttRetry = 0;
     micBtn.disabled = false;
     micLabel.textContent = '正在听…快说！';
@@ -1079,7 +1106,8 @@
       showScreen(unsupportedScreen);
       return;
     }
-    ensureAudioCtx(); // unlock Web Audio in this tap
+    // Unlock Web Audio only on non-iOS (desktop Chrome hint MP3 path)
+    if (!isIOS) ensureAudioCtx();
     score = 0;
     scoreEl.textContent = '0';
     refillDeck();
