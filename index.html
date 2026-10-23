@@ -497,13 +497,15 @@
 
   let speakToken = 0;
   let speaking = false;
-  let audioCtx = null;       // reuse forever — closing it breaks iOS STT
+  let audioCtx = null;       // reuse forever on desktop — never create on iOS
   let audioBuffers = {};
+  let speakHtmlAudio = null; // iOS HTMLAudioElement only (no AudioContext)
   let sttWatchdog = null;
   let sttGotResult = false;
   let sttRetry = 0;
   const STT_RETRY_MS = [0, 400, 1000, 2000, 3500];
 
+  /* phonics-fix-ios-audio-html5 */
   /* phonics-fix-ios-stt-v2 */
   // iPhone / iPad (incl. iPadOS desktop-mode UA)
   const isIOS = (function () {
@@ -534,7 +536,17 @@
     speakToken += 1;
     speaking = false;
     micBtn.disabled = false;
-    // Never close audioCtx on iOS
+    // Clear iOS HTMLAudio only — never touch AudioContext here
+    if (speakHtmlAudio) {
+      try {
+        speakHtmlAudio.onended = null;
+        speakHtmlAudio.onerror = null;
+        speakHtmlAudio.pause();
+        speakHtmlAudio.removeAttribute('src');
+        speakHtmlAudio.load();
+      } catch (err) { /* ignore */ }
+      speakHtmlAudio = null;
+    }
   }
 
   function preloadWordAudio(word) {
@@ -555,14 +567,22 @@
       });
   }
 
-  // iOS: visual letter-by-letter 拼读 — never play audio (keeps Web Speech free)
-  function speakWordVisual(word, token) {
+  // Visual letter-by-letter 拼读 (iOS with HTMLAudio, or alone as fallback)
+  function speakWordVisual(word, token, opts) {
+    opts = opts || {};
     const letters = word.toUpperCase().split('');
     const joined = letters.join('… ');
     let i = 0;
-    // Mic stays enabled on iOS; speaking flag only briefly for animation cancel
-    speaking = false;
-    micBtn.disabled = false;
+
+    function doneVisual() {
+      if (token !== speakToken) return;
+      if (opts.onVisualDone) opts.onVisualDone();
+      else {
+        setPrompt('一起拼：' + joined + ' → ' + word + '，现在点麦克风跟读', 'listen');
+        micLabel.textContent = '点击说话';
+      }
+    }
+
     setPrompt('一起拼：' + (letters[0] || '') + '…', 'listen');
 
     function step() {
@@ -571,20 +591,86 @@
       if (i < letters.length) {
         const shown = letters.slice(0, i + 1).join('… ');
         setPrompt('一起拼：' + shown, 'listen');
-        setTimeout(step, 420);
+        setTimeout(step, 380);
       } else {
-        setPrompt('一起拼：' + joined + ' → ' + word + '，现在点麦克风跟读', 'listen');
-        micLabel.textContent = '点击说话';
+        setPrompt('一起拼：' + joined + ' → ' + word, 'listen');
+        setTimeout(doneVisual, opts.holdMs != null ? opts.holdMs : 500);
       }
     }
     if (letters.length <= 1) {
-      setPrompt('一起拼：' + word.toUpperCase() + ' → ' + word + '，现在点麦克风跟读', 'listen');
-      micLabel.textContent = '点击说话';
+      setPrompt('一起拼：' + word.toUpperCase() + ' → ' + word, 'listen');
+      setTimeout(doneVisual, 400);
       return;
     }
-    setTimeout(step, 420);
+    setTimeout(step, 380);
   }
 
+  // iOS: HTMLAudioElement MP3 + visual 拼读. NEVER AudioContext / speechSynthesis.
+  function speakWordIOS(word, token) {
+    speaking = true;
+    micBtn.disabled = true;
+    setPrompt('听：「' + word + '」……一起拼', 'listen');
+
+    speakWordVisual(word, token, {
+      holdMs: 200,
+      onVisualDone: function () {
+        if (token !== speakToken) return;
+        if (!speaking) {
+          setPrompt('一起拼：' + word.toUpperCase().split('').join('… ') + ' → ' + word + '，现在点麦克风跟读', 'listen');
+        }
+      }
+    });
+
+    const url = 'audio/' + encodeURIComponent(word) + '.mp3';
+    const a = new Audio();
+    a.preload = 'auto';
+    a.setAttribute('playsinline', 'true');
+    a.setAttribute('webkit-playsinline', 'true');
+    a.playsInline = true;
+    a.src = url;
+    speakHtmlAudio = a;
+
+    function finishOk() {
+      if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      setPrompt('一起拼完啦 → 「' + word + '」，现在点麦克风跟读', 'listen');
+      micLabel.textContent = '点击说话';
+      if (speakHtmlAudio === a) speakHtmlAudio = null;
+    }
+
+    function finishFail() {
+      if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      // No speechSynthesis on iOS — keeps STT alive
+      setPrompt('一起拼：' + word.toUpperCase().split('').join('… ') + ' → ' + word + '。请家长读出：「' + word + '」，再点麦克风跟读', 'err');
+      micLabel.textContent = '点击说话';
+      if (speakHtmlAudio === a) speakHtmlAudio = null;
+    }
+
+    a.onended = finishOk;
+    a.onerror = finishFail;
+
+    // play() must stay in the same user-gesture stack as the button tap
+    var playPromise;
+    try {
+      playPromise = a.play();
+    } catch (err) {
+      finishFail();
+      return;
+    }
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise.then(function () {
+        if (token !== speakToken) return;
+        setPrompt('听：「' + word + '」——一起拼字母', 'listen');
+      }).catch(function () {
+        finishFail();
+      });
+    }
+  }
+
+  // Desktop Chrome: Web Audio MP3 via reused audioCtx
   function speakWordAudio(word, token) {
     speaking = true;
     micBtn.disabled = true;
@@ -617,7 +703,6 @@
       if (token !== speakToken) return;
       speaking = false;
       micBtn.disabled = false;
-      // Do not use HTMLAudio or speechSynthesis on iPhone — WebKit bug kills STT
       setPrompt('请家长读出：「' + word + '」，再点麦克风跟读', 'err');
     });
   }
@@ -631,7 +716,7 @@
     stopSpeak();
     const token = speakToken;
     if (isIOS) {
-      speakWordVisual(word, token);
+      speakWordIOS(word, token);
     } else {
       speakWordAudio(word, token);
     }
@@ -697,14 +782,34 @@
       .trim();
   }
 
+  // STT often returns digits for number-words (ten→10, six→6)
+  const WORD_DIGIT_ALIASES = {
+    one: ['1', 'one'], two: ['2', 'two', 'to', 'too'],
+    three: ['3', 'three'], four: ['4', 'four', 'for'],
+    five: ['5', 'five'], six: ['6', 'six'],
+    seven: ['7', 'seven'], eight: ['8', 'eight', 'ate'],
+    nine: ['9', 'nine'], ten: ['10', 'ten']
+  };
+
+  function hasWholeToken(haystack, needle) {
+    if (!haystack || !needle) return false;
+    if (haystack === needle) return true;
+    const parts = haystack.split(' ');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === needle) return true;
+    }
+    return false;
+  }
+
   function wholeWordMatch(transcript, word) {
     const t = normalize(transcript);
     const w = normalize(word);
     if (!t || !w) return false;
-    if (t === w) return true;
-    // whole word boundary
-    const re = new RegExp('(?:^|\\s)' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\s|$)');
-    return re.test(t);
+    const aliases = WORD_DIGIT_ALIASES[w] || [w];
+    for (let ai = 0; ai < aliases.length; ai++) {
+      if (hasWholeToken(t, aliases[ai])) return true;
+    }
+    return false;
   }
 
   function collectTranscripts(event) {
