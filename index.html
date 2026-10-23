@@ -641,26 +641,53 @@
     });
   }
 
-  function handleSpeechResult(event) {
-    if (!current || busy === false && !listening) { /* continue */ }
-    const transcripts = collectTranscripts(event);
-    const primary = transcripts[0] ? normalize(transcripts[0]) : '';
-    let matched = false;
+  function anyMatch(transcripts, word) {
     for (let i = 0; i < transcripts.length; i++) {
-      if (wholeWordMatch(transcripts[i], current.word)) {
-        matched = true;
-        break;
-      }
+      if (wholeWordMatch(transcripts[i], word)) return true;
+    }
+    return false;
+  }
+
+  function finishSpeech(matched, heard) {
+    if (!listening && !busy) return;
+    // stop mic ASAP
+    if (recognition) {
+      try { recognition.onresult = null; recognition.onerror = null; recognition.onend = null; recognition.abort(); } catch (e) { /* ignore */ }
     }
     listening = false;
     micBtn.classList.remove('listening');
     micLabel.textContent = '点击说话';
     busy = true;
-
     if (matched) {
       onCorrectHit();
     } else {
-      onMiss(primary || '');
+      onMiss(heard || '');
+    }
+  }
+
+  function handleSpeechResult(event) {
+    if (!current || busy) return;
+    const transcripts = collectTranscripts(event);
+    if (!transcripts.length) return;
+
+    const primary = normalize(transcripts[0]);
+    if (primary) {
+      micLabel.textContent = '听到：' + primary;
+    }
+
+    // Fast path: match on interim OR final — don't wait for silence end
+    if (anyMatch(transcripts, current.word)) {
+      finishSpeech(true, primary);
+      return;
+    }
+
+    // Only miss when we have a final result that didn't match
+    let hasFinal = false;
+    for (let i = 0; i < event.results.length; i++) {
+      if (event.results[i].isFinal) hasFinal = true;
+    }
+    if (hasFinal) {
+      finishSpeech(false, primary);
     }
   }
 
@@ -687,14 +714,14 @@
 
     recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.interimResults = false;
+    recognition.interimResults = true; // 边说边出字，说对立刻判定
     recognition.continuous = false;
     recognition.maxAlternatives = 5;
 
     recognition.onstart = function () {
       listening = true;
       micBtn.classList.add('listening');
-      micLabel.textContent = '正在听…';
+      micLabel.textContent = '正在听…快说！';
       setPrompt('请说：「' + (hintToggle.checked ? current.word : '提示词对应的单词') + '」', 'listen');
     };
 
@@ -703,18 +730,17 @@
     };
 
     recognition.onerror = function (event) {
+      const err = event && event.error;
+      if (err === 'aborted') return; // early stop after match
       listening = false;
       micBtn.classList.remove('listening');
       micLabel.textContent = '点击说话';
-      const err = event && event.error;
       if (err === 'not-allowed' || err === 'service-not-allowed') {
-        setPrompt('请允许使用麦克风后再试（浏览器地址栏旁）', 'err');
+        setPrompt('请用 Safari 打开网页链接并允许麦克风，不要用聊天预览', 'err');
       } else if (err === 'no-speech') {
         busy = true;
         onMiss('');
         return;
-      } else if (err === 'aborted') {
-        setPrompt('已取消');
       } else {
         setPrompt('识别出了点小问题，再点麦克风试试', 'err');
       }
@@ -723,7 +749,6 @@
 
     recognition.onend = function () {
       if (listening) {
-        // ended without result
         listening = false;
         micBtn.classList.remove('listening');
         micLabel.textContent = '点击说话';
