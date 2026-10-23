@@ -461,12 +461,16 @@
     else speakBtn.classList.remove('pulse');
   }
 
+  let speakAudio = null;
+  let speakToken = 0;
+
   function pickEnglishVoice() {
     const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    // Prefer clearly English system voices; avoid zh voices reading English as nonsense
     const prefer = [
-      function (v) { return /en-US/i.test(v.lang) && /Google|Samantha|Karen|Daniel|Female|siri/i.test(v.name); },
-      function (v) { return /en-US/i.test(v.lang); },
-      function (v) { return /^en/i.test(v.lang); }
+      function (v) { return /en[-_]US/i.test(v.lang) && /Samantha|Karen|Daniel|Moira|Google US English|Enhanced/i.test(v.name); },
+      function (v) { return /en[-_]US/i.test(v.lang) && !/zh|Chinese|中文/i.test(v.name); },
+      function (v) { return /^en/i.test(v.lang) && !/zh|Chinese|中文/i.test(v.name); }
     ];
     for (let p = 0; p < prefer.length; p++) {
       const hit = voices.find(prefer[p]);
@@ -475,38 +479,108 @@
     return null;
   }
 
-  function speakWord(word, opts) {
-    opts = opts || {};
+  function stopSpeak() {
+    speakToken += 1;
+    if (speakAudio) {
+      try { speakAudio.pause(); speakAudio.src = ''; } catch (e) { /* ignore */ }
+      speakAudio = null;
+    }
+    if (window.speechSynthesis) {
+      try { speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function speakWithSynthesis(word, token) {
     if (!window.speechSynthesis) {
-      setPrompt('这台设备暂时不能播提示音，请家长帮忙读：「' + word + '」', 'err');
+      setPrompt('这台设备暂时不能播提示音，请家长读：「' + word + '」', 'err');
       return;
     }
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(word);
-    u.lang = 'en-US';
-    u.rate = opts.slow ? 0.7 : 0.9;
-    u.pitch = 1.05;
     const voice = pickEnglishVoice();
+    // Spell then whole word — clearer for kids, less TTS misread on short words
+    const letters = word.toUpperCase().split('').join('... ');
+    const script = letters + '... ' + word;
+    const u = new SpeechSynthesisUtterance(script);
+    u.lang = 'en-US';
+    u.rate = 0.75;
+    u.pitch = 1;
     if (voice) u.voice = voice;
     u.onstart = function () {
+      if (token !== speakToken) return;
       setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
     };
     u.onerror = function () {
+      if (token !== speakToken) return;
       setPrompt('提示音播不了，请家长读：「' + word + '」', 'err');
     };
-    // iOS often needs voices loaded
-    const start = function () { speechSynthesis.speak(u); };
+    const start = function () {
+      if (token !== speakToken) return;
+      speechSynthesis.speak(u);
+    };
     if (speechSynthesis.getVoices().length === 0) {
-      speechSynthesis.onvoiceschanged = function () {
+      const once = function () {
+        speechSynthesis.onvoiceschanged = null;
         const v = pickEnglishVoice();
         if (v) u.voice = v;
         start();
       };
-      // fallback kick
-      setTimeout(start, 250);
+      speechSynthesis.onvoiceschanged = once;
+      setTimeout(once, 300);
     } else {
       start();
     }
+  }
+
+  function speakWord(word) {
+    word = String(word || '').toLowerCase().trim();
+    if (!word) return;
+    stopSpeak();
+    const token = speakToken;
+    setPrompt('听：「' + word + '」……', 'listen');
+
+    // Prefer Free Dictionary US audio (real pronunciation), fallback to speechSynthesis
+    const api = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word);
+    fetch(api)
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('no entry')); })
+      .then(function (data) {
+        if (token !== speakToken) return;
+        let audioUrl = '';
+        const entry = data && data[0];
+        const phonetics = (entry && entry.phonetics) || [];
+        for (let i = 0; i < phonetics.length; i++) {
+          const a = phonetics[i] && phonetics[i].audio;
+          if (a && /us/i.test(a)) { audioUrl = a; break; }
+        }
+        if (!audioUrl) {
+          for (let i = 0; i < phonetics.length; i++) {
+            if (phonetics[i] && phonetics[i].audio) { audioUrl = phonetics[i].audio; break; }
+          }
+        }
+        if (!audioUrl) throw new Error('no audio');
+        speakAudio = new Audio(audioUrl);
+        speakAudio.onplay = function () {
+          if (token !== speakToken) return;
+          setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
+        };
+        speakAudio.onended = function () {
+          // play twice for kids: second time after short pause
+          if (token !== speakToken) return;
+          setTimeout(function () {
+            if (token !== speakToken) return;
+            const again = new Audio(audioUrl);
+            speakAudio = again;
+            again.play().catch(function () {});
+          }, 350);
+        };
+        speakAudio.onerror = function () {
+          if (token !== speakToken) return;
+          speakWithSynthesis(word, token);
+        };
+        return speakAudio.play();
+      })
+      .catch(function () {
+        if (token !== speakToken) return;
+        speakWithSynthesis(word, token);
+      });
   }
 
   function pickCurrentBall() {
@@ -733,7 +807,7 @@
           setPrompt('先点「听怎么读」听标准发音，再点麦克风跟读', 'listen');
           // auto play once after 2 fails
           if (current && missStreak === MISS_BEFORE_HINT) {
-            speakWord(current.word, { slow: true });
+            speakWord(current.word);
           }
         } else {
           setPrompt('点击麦克风，再说一次～');
@@ -881,13 +955,8 @@
   micBtn.addEventListener('click', startListening);
   speakBtn.addEventListener('click', function () {
     if (!current) return;
-    // stop listening so TTS isn't fighting the mic
     if (listening) stopListening();
-    speakWord(current.word, { slow: true });
-    // after slow read, quick repeat once
-    setTimeout(function () {
-      if (current) speakWord(current.word, { slow: false });
-    }, 1200);
+    speakWord(current.word);
   });
   // preload voices on iOS/Safari
   if (window.speechSynthesis) {
@@ -896,12 +965,14 @@
   }
   nextGroupBtn.addEventListener('click', function () {
     if (busy && listening) stopListening();
+    stopSpeak();
     busy = false;
     startRound();
     setPrompt('新的一组来啦！');
   });
   homeBtn.addEventListener('click', function () {
     stopListening();
+    stopSpeak();
     busy = false;
     showScreen(startScreen);
   });
