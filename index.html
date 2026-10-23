@@ -463,10 +463,11 @@
 
   let speakAudio = null;
   let speakToken = 0;
+  let speaking = false;
+  let speakCtx = null; // Web Audio — close after play so iOS frees mic
 
   function pickEnglishVoice() {
     const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
-    // Prefer clearly English system voices; avoid zh voices reading English as nonsense
     const prefer = [
       function (v) { return /en[-_]US/i.test(v.lang) && /Samantha|Karen|Daniel|Moira|Google US English|Enhanced/i.test(v.name); },
       function (v) { return /en[-_]US/i.test(v.lang) && !/zh|Chinese|中文/i.test(v.name); },
@@ -479,11 +480,10 @@
     return null;
   }
 
-  let speaking = false;
-
   function stopSpeak() {
     speakToken += 1;
     speaking = false;
+    micBtn.disabled = false;
     if (speakAudio) {
       try {
         speakAudio.onended = null;
@@ -495,25 +495,23 @@
       } catch (e) { /* ignore */ }
       speakAudio = null;
     }
+    if (speakCtx) {
+      try { speakCtx.close(); } catch (e) { /* ignore */ }
+      speakCtx = null;
+    }
     if (window.speechSynthesis) {
       try { speechSynthesis.cancel(); } catch (e) { /* ignore */ }
     }
   }
 
-  function releaseAudioThen(cb) {
-    stopSpeak();
-    // iOS Safari: after HTMLAudio/TTS, mic STT needs a short gap to reclaim the session
-    const delay = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 550 : 200;
-    setTimeout(cb, delay);
-  }
-
   function speakWithSynthesis(word, token) {
     if (!window.speechSynthesis) {
       setPrompt('这台设备暂时不能播提示音，请家长读：「' + word + '」', 'err');
+      speaking = false;
+      micBtn.disabled = false;
       return;
     }
     const voice = pickEnglishVoice();
-    // Spell then whole word — clearer for kids, less TTS misread on short words
     const letters = word.toUpperCase().split('').join('... ');
     const script = letters + '... ' + word;
     const u = new SpeechSynthesisUtterance(script);
@@ -523,10 +521,18 @@
     if (voice) u.voice = voice;
     u.onstart = function () {
       if (token !== speakToken) return;
-      setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
+      setPrompt('听：「' + word + '」——听完再点麦克风', 'listen');
+    };
+    u.onend = function () {
+      if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      setPrompt('现在点麦克风，跟读「' + word + '」', 'listen');
     };
     u.onerror = function () {
       if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
       setPrompt('提示音播不了，请家长读：「' + word + '」', 'err');
     };
     const start = function () {
@@ -557,59 +563,59 @@
     micBtn.disabled = true;
     setPrompt('听：「' + word + '」……', 'listen');
 
-    const finishSpeak = function () {
+    const doneOk = function () {
       if (token !== speakToken) return;
       speaking = false;
       micBtn.disabled = false;
-      if (speakAudio) {
-        try {
-          speakAudio.onended = null;
-          speakAudio.pause();
-          speakAudio.removeAttribute('src');
-          speakAudio.load();
-        } catch (e) { /* ignore */ }
-        speakAudio = null;
+      if (speakCtx) {
+        try { speakCtx.close(); } catch (e) { /* ignore */ }
+        speakCtx = null;
       }
       setPrompt('现在点麦克风，跟读「' + word + '」', 'listen');
       micLabel.textContent = '点击说话';
     };
 
-    // Local bundled pronunciation — play ONCE (double-play keeps iOS audio session busy)
     const src = 'audio/' + encodeURIComponent(word) + '.mp3';
-    const a = new Audio();
-    a.preload = 'auto';
-    a.setAttribute('playsinline', 'true');
-    a.src = src;
-    speakAudio = a;
-    a.onplay = function () {
-      if (token !== speakToken) return;
-      setPrompt('听：「' + word + '」——听完再点麦克风', 'listen');
-    };
-    a.onended = function () { finishSpeak(); };
-    a.onerror = function () {
-      if (token !== speakToken) return;
-      speaking = false;
-      micBtn.disabled = false;
-      speakWithSynthesis(word, token);
-      // synthesis has no reliable end on all iOS; unlock mic after a beat
-      setTimeout(function () {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC || !window.fetch) {
+      // Fallback HTMLAudio
+      const a = new Audio(src);
+      a.setAttribute('playsinline', 'true');
+      speakAudio = a;
+      a.onended = doneOk;
+      a.onerror = function () { speakWithSynthesis(word, token); };
+      a.play().catch(function () { speakWithSynthesis(word, token); });
+      return;
+    }
+
+    // Web Audio: play then close context — critical for iOS mic reclaim
+    const ctx = new AC();
+    speakCtx = ctx;
+    fetch(src)
+      .then(function (r) {
+        if (!r.ok) throw new Error('no audio');
+        return r.arrayBuffer();
+      })
+      .then(function (buf) {
+        if (token !== speakToken) return null;
+        return ctx.decodeAudioData(buf);
+      })
+      .then(function (audioBuf) {
+        if (!audioBuf || token !== speakToken) return;
+        if (ctx.state === 'suspended') ctx.resume();
+        const node = ctx.createBufferSource();
+        node.buffer = audioBuf;
+        node.connect(ctx.destination);
+        node.onended = function () { doneOk(); };
+        setPrompt('听：「' + word + '」——听完再点麦克风', 'listen');
+        node.start(0);
+      })
+      .catch(function () {
         if (token !== speakToken) return;
-        speaking = false;
-        micBtn.disabled = false;
-        setPrompt('现在点麦克风，跟读「' + word + '」', 'listen');
-      }, 1800);
-    };
-    a.play().catch(function () {
-      if (token !== speakToken) return;
-      speaking = false;
-      micBtn.disabled = false;
-      speakWithSynthesis(word, token);
-      setTimeout(function () {
-        if (token !== speakToken) return;
-        speaking = false;
-        micBtn.disabled = false;
-      }, 1800);
-    });
+        try { ctx.close(); } catch (e) { /* ignore */ }
+        speakCtx = null;
+        speakWithSynthesis(word, token);
+      });
   }
 
   function pickCurrentBall() {
@@ -905,7 +911,7 @@
 
   function beginRecognition() {
     if (recognition) {
-      try { recognition.abort(); } catch (e) { /* ignore */ }
+      try { recognition.onresult = null; recognition.onerror = null; recognition.onend = null; recognition.abort(); } catch (e) { /* ignore */ }
       recognition = null;
     }
     recognition = new SpeechRecognition();
@@ -939,7 +945,7 @@
         onMiss('');
         return;
       } else if (err === 'audio-capture') {
-        setPrompt('麦克风被提示音占用了，再点一次说话试试', 'err');
+        setPrompt('麦克风还没就绪，请再点一次「点击说话」', 'err');
       } else {
         setPrompt('识别出了点小问题，再点麦克风试试', 'err');
       }
@@ -955,13 +961,7 @@
       }
     };
 
-    try {
-      recognition.start();
-    } catch (e) {
-      setPrompt('无法启动麦克风，请稍等再点一次', 'err');
-      busy = false;
-      listening = false;
-    }
+    recognition.start();
   }
 
   function startListening() {
@@ -976,14 +976,23 @@
       setPrompt('已取消，再点麦克风试试');
       return;
     }
+    if (speaking) {
+      setPrompt('请等提示音播完，再点说话', 'err');
+      return;
+    }
 
-    // Always release TTS/audio before STT (iOS will otherwise silently fail)
-    micLabel.textContent = '准备中…';
-    setPrompt('正在打开麦克风…', 'listen');
-    releaseAudioThen(function () {
-      if (busy || !current) return;
+    // IMPORTANT (iOS): recognition.start() MUST be synchronous in this tap.
+    // No setTimeout / getUserMedia-then before start — those drop the user gesture.
+    stopSpeak();
+    micBtn.disabled = false;
+    micLabel.textContent = '正在听…快说！';
+    try {
       beginRecognition();
-    });
+    } catch (e) {
+      setPrompt('无法启动麦克风，请再点一次', 'err');
+      busy = false;
+      listening = false;
+    }
   }
 
   // --- Events ---
