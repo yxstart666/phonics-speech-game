@@ -479,15 +479,32 @@
     return null;
   }
 
+  let speaking = false;
+
   function stopSpeak() {
     speakToken += 1;
+    speaking = false;
     if (speakAudio) {
-      try { speakAudio.pause(); speakAudio.src = ''; } catch (e) { /* ignore */ }
+      try {
+        speakAudio.onended = null;
+        speakAudio.onerror = null;
+        speakAudio.onplay = null;
+        speakAudio.pause();
+        speakAudio.removeAttribute('src');
+        speakAudio.load();
+      } catch (e) { /* ignore */ }
       speakAudio = null;
     }
     if (window.speechSynthesis) {
       try { speechSynthesis.cancel(); } catch (e) { /* ignore */ }
     }
+  }
+
+  function releaseAudioThen(cb) {
+    stopSpeak();
+    // iOS Safari: after HTMLAudio/TTS, mic STT needs a short gap to reclaim the session
+    const delay = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 550 : 200;
+    setTimeout(cb, delay);
   }
 
   function speakWithSynthesis(word, token) {
@@ -533,35 +550,65 @@
   function speakWord(word) {
     word = String(word || '').toLowerCase().trim();
     if (!word) return;
+    if (listening) stopListening();
     stopSpeak();
     const token = speakToken;
+    speaking = true;
+    micBtn.disabled = true;
     setPrompt('听：「' + word + '」……', 'listen');
 
-    // Local bundled US-ish pronunciation (stable; avoids Safari TTS saying wrong word)
-    const src = 'audio/' + encodeURIComponent(word) + '.mp3';
-    const playOnce = function (onDone) {
-      const a = new Audio(src);
-      speakAudio = a;
-      a.onplay = function () {
-        if (token !== speakToken) return;
-        setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
-      };
-      a.onended = function () { if (onDone) onDone(); };
-      a.onerror = function () {
-        if (token !== speakToken) return;
-        speakWithSynthesis(word, token);
-      };
-      a.play().catch(function () {
-        if (token !== speakToken) return;
-        speakWithSynthesis(word, token);
-      });
-    };
-    playOnce(function () {
+    const finishSpeak = function () {
       if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      if (speakAudio) {
+        try {
+          speakAudio.onended = null;
+          speakAudio.pause();
+          speakAudio.removeAttribute('src');
+          speakAudio.load();
+        } catch (e) { /* ignore */ }
+        speakAudio = null;
+      }
+      setPrompt('现在点麦克风，跟读「' + word + '」', 'listen');
+      micLabel.textContent = '点击说话';
+    };
+
+    // Local bundled pronunciation — play ONCE (double-play keeps iOS audio session busy)
+    const src = 'audio/' + encodeURIComponent(word) + '.mp3';
+    const a = new Audio();
+    a.preload = 'auto';
+    a.setAttribute('playsinline', 'true');
+    a.src = src;
+    speakAudio = a;
+    a.onplay = function () {
+      if (token !== speakToken) return;
+      setPrompt('听：「' + word + '」——听完再点麦克风', 'listen');
+    };
+    a.onended = function () { finishSpeak(); };
+    a.onerror = function () {
+      if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      speakWithSynthesis(word, token);
+      // synthesis has no reliable end on all iOS; unlock mic after a beat
       setTimeout(function () {
         if (token !== speakToken) return;
-        playOnce(null);
-      }, 350);
+        speaking = false;
+        micBtn.disabled = false;
+        setPrompt('现在点麦克风，跟读「' + word + '」', 'listen');
+      }, 1800);
+    };
+    a.play().catch(function () {
+      if (token !== speakToken) return;
+      speaking = false;
+      micBtn.disabled = false;
+      speakWithSynthesis(word, token);
+      setTimeout(function () {
+        if (token !== speakToken) return;
+        speaking = false;
+        micBtn.disabled = false;
+      }, 1800);
     });
   }
 
@@ -856,27 +903,20 @@
     micBtn.classList.remove('listening');
   }
 
-  function startListening() {
-    if (!SpeechRecognition) {
-      showScreen(unsupportedScreen);
-      return;
+  function beginRecognition() {
+    if (recognition) {
+      try { recognition.abort(); } catch (e) { /* ignore */ }
+      recognition = null;
     }
-    if (busy || !current) return;
-    if (listening) {
-      stopListening();
-      micLabel.textContent = '点击说话';
-      setPrompt('已取消，再点麦克风试试');
-      return;
-    }
-
     recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.interimResults = true; // 边说边出字，说对立刻判定
+    recognition.interimResults = true;
     recognition.continuous = false;
     recognition.maxAlternatives = 5;
 
     recognition.onstart = function () {
       listening = true;
+      micBtn.disabled = false;
       micBtn.classList.add('listening');
       micLabel.textContent = '正在听…快说！';
       setPrompt('请说：「' + (hintToggle.checked ? current.word : '提示词对应的单词') + '」', 'listen');
@@ -888,7 +928,7 @@
 
     recognition.onerror = function (event) {
       const err = event && event.error;
-      if (err === 'aborted') return; // early stop after match
+      if (err === 'aborted') return;
       listening = false;
       micBtn.classList.remove('listening');
       micLabel.textContent = '点击说话';
@@ -898,6 +938,8 @@
         busy = true;
         onMiss('');
         return;
+      } else if (err === 'audio-capture') {
+        setPrompt('麦克风被提示音占用了，再点一次说话试试', 'err');
       } else {
         setPrompt('识别出了点小问题，再点麦克风试试', 'err');
       }
@@ -916,9 +958,32 @@
     try {
       recognition.start();
     } catch (e) {
-      setPrompt('无法启动麦克风，请刷新页面再试', 'err');
+      setPrompt('无法启动麦克风，请稍等再点一次', 'err');
       busy = false;
+      listening = false;
     }
+  }
+
+  function startListening() {
+    if (!SpeechRecognition) {
+      showScreen(unsupportedScreen);
+      return;
+    }
+    if (busy || !current) return;
+    if (listening) {
+      stopListening();
+      micLabel.textContent = '点击说话';
+      setPrompt('已取消，再点麦克风试试');
+      return;
+    }
+
+    // Always release TTS/audio before STT (iOS will otherwise silently fail)
+    micLabel.textContent = '准备中…';
+    setPrompt('正在打开麦克风…', 'listen');
+    releaseAudioThen(function () {
+      if (busy || !current) return;
+      beginRecognition();
+    });
   }
 
   // --- Events ---
