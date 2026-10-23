@@ -228,6 +228,23 @@
       50% { transform: scale(1.08); }
     }
     .mic-label { font-size: 14px; font-weight: 600; opacity: 0.8; margin-top: -4px; }
+    .speak-btn {
+      appearance: none; border: none; cursor: pointer;
+      margin-top: 8px; padding: 12px 20px; border-radius: 999px;
+      font-size: 16px; font-weight: 700; color: var(--ink);
+      background: var(--card); box-shadow: 0 4px 0 rgba(0,0,0,0.08), var(--shadow);
+      display: none; align-items: center; gap: 8px; min-height: 48px;
+    }
+    .speak-btn.show { display: inline-flex; }
+    .speak-btn.pulse {
+      animation: speakPulse 1.1s ease-in-out infinite;
+      background: linear-gradient(135deg, #ffe066, #ffd43b);
+    }
+    @keyframes speakPulse {
+      0%,100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+    .speak-btn:active { transform: translateY(2px); }
     .row-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
     .celebrate {
@@ -293,6 +310,7 @@
     <div class="controls">
       <button type="button" class="mic-btn" id="micBtn" aria-label="开始说话">🎤</button>
       <div class="mic-label" id="micLabel">点击说话</div>
+      <button type="button" class="speak-btn" id="speakBtn" aria-label="听怎么读">🔊 听怎么读</button>
       <div class="row-actions">
         <button type="button" class="btn btn-secondary" id="nextGroupBtn">下一组</button>
         <button type="button" class="btn btn-ghost" id="homeBtn">回首页</button>
@@ -344,6 +362,7 @@
   const hintToggle = document.getElementById('hintToggle');
   const micBtn = document.getElementById('micBtn');
   const micLabel = document.getElementById('micLabel');
+  const speakBtn = document.getElementById('speakBtn');
   const nextGroupBtn = document.getElementById('nextGroupBtn');
   const homeBtn = document.getElementById('homeBtn');
   const celebrateEl = document.getElementById('celebrateEl');
@@ -356,6 +375,8 @@
   let busy = false;        // animating / listening lock
   let recognition = null;
   let listening = false;
+  let missStreak = 0;      // fails on current word
+  const MISS_BEFORE_HINT = 2;
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -430,15 +451,77 @@
     ballEl.style.display = current ? 'block' : 'none';
   }
 
+  function hideSpeakHint() {
+    speakBtn.classList.remove('show', 'pulse');
+  }
+
+  function showSpeakHint(pulse) {
+    speakBtn.classList.add('show');
+    if (pulse) speakBtn.classList.add('pulse');
+    else speakBtn.classList.remove('pulse');
+  }
+
+  function pickEnglishVoice() {
+    const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    const prefer = [
+      function (v) { return /en-US/i.test(v.lang) && /Google|Samantha|Karen|Daniel|Female|siri/i.test(v.name); },
+      function (v) { return /en-US/i.test(v.lang); },
+      function (v) { return /^en/i.test(v.lang); }
+    ];
+    for (let p = 0; p < prefer.length; p++) {
+      const hit = voices.find(prefer[p]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function speakWord(word, opts) {
+    opts = opts || {};
+    if (!window.speechSynthesis) {
+      setPrompt('这台设备暂时不能播提示音，请家长帮忙读：「' + word + '」', 'err');
+      return;
+    }
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = 'en-US';
+    u.rate = opts.slow ? 0.7 : 0.9;
+    u.pitch = 1.05;
+    const voice = pickEnglishVoice();
+    if (voice) u.voice = voice;
+    u.onstart = function () {
+      setPrompt('听：「' + word + '」——跟读一遍再点麦克风', 'listen');
+    };
+    u.onerror = function () {
+      setPrompt('提示音播不了，请家长读：「' + word + '」', 'err');
+    };
+    // iOS often needs voices loaded
+    const start = function () { speechSynthesis.speak(u); };
+    if (speechSynthesis.getVoices().length === 0) {
+      speechSynthesis.onvoiceschanged = function () {
+        const v = pickEnglishVoice();
+        if (v) u.voice = v;
+        start();
+      };
+      // fallback kick
+      setTimeout(start, 250);
+    } else {
+      start();
+    }
+  }
+
   function pickCurrentBall() {
     if (targets.length === 0) {
       current = null;
+      missStreak = 0;
+      hideSpeakHint();
       resetBallDom();
       updateHintVisibility();
       return;
     }
     const t = targets[Math.floor(Math.random() * targets.length)];
     current = { word: t.word, colorIdx: t.colorIdx };
+    missStreak = 0;
+    hideSpeakHint();
     resetBallDom();
     updateHintVisibility();
     setPrompt('点击麦克风，说出这个单词～');
@@ -593,6 +676,8 @@
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
 
+    missStreak = 0;
+    hideSpeakHint();
     setPrompt('说对了！「' + current.word + '」👍', 'ok');
     flyBallTo(cx, cy, function () {
       ballEl.classList.add('pop');
@@ -627,8 +712,15 @@
   }
 
   function onMiss(heard) {
+    missStreak += 1;
     const shown = heard ? ('听到了「' + heard + '」') : '没听清';
-    setPrompt(shown + '，再试一次吧～轻轻说清楚一点哦', 'err');
+    const needHint = missStreak >= MISS_BEFORE_HINT;
+    if (needHint) {
+      showSpeakHint(true);
+      setPrompt(shown + '。点下面「听怎么读」，跟读后再说～', 'err');
+    } else {
+      setPrompt(shown + '，再试一次吧～轻轻说清楚一点哦', 'err');
+    }
     flyMiss(function () {
       setTimeout(function () {
         if (ballEl.parentNode) ballEl.parentNode.removeChild(ballEl);
@@ -636,7 +728,16 @@
         resetBallDom();
         updateHintVisibility();
         busy = false;
-        setPrompt('点击麦克风，再说一次～');
+        if (needHint) {
+          showSpeakHint(true);
+          setPrompt('先点「听怎么读」听标准发音，再点麦克风跟读', 'listen');
+          // auto play once after 2 fails
+          if (current && missStreak === MISS_BEFORE_HINT) {
+            speakWord(current.word, { slow: true });
+          }
+        } else {
+          setPrompt('点击麦克风，再说一次～');
+        }
       }, 200);
     });
   }
@@ -778,6 +879,21 @@
   });
 
   micBtn.addEventListener('click', startListening);
+  speakBtn.addEventListener('click', function () {
+    if (!current) return;
+    // stop listening so TTS isn't fighting the mic
+    if (listening) stopListening();
+    speakWord(current.word, { slow: true });
+    // after slow read, quick repeat once
+    setTimeout(function () {
+      if (current) speakWord(current.word, { slow: false });
+    }, 1200);
+  });
+  // preload voices on iOS/Safari
+  if (window.speechSynthesis) {
+    speechSynthesis.getVoices();
+    speechSynthesis.onvoiceschanged = function () { speechSynthesis.getVoices(); };
+  }
   nextGroupBtn.addEventListener('click', function () {
     if (busy && listening) stopListening();
     busy = false;
